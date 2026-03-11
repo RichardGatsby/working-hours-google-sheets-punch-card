@@ -1,0 +1,252 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+WORK_DIR="$HOME/.work-hours"
+STATE_FILE="$WORK_DIR/state.json"
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+SHEETS_PY="$SCRIPT_DIR/sheets.py"
+
+# ---------------------------------------------------------------------------
+# JSON helpers (avoid requiring jq)
+# ---------------------------------------------------------------------------
+
+py() { python3 -c "$@"; }
+
+state_get() {
+    py "import json,sys; d=json.load(open('$STATE_FILE')); print(d.get('$1', ''), end='')"
+}
+
+state_write() {
+    py "import json; open('$STATE_FILE','w').write(json.dumps($1, indent=2))"
+}
+
+epoch_now() {
+    python3 -c "import time; print(int(time.time()), end='')"
+}
+
+epoch_to_hhmm() {
+    python3 -c "import datetime; print(datetime.datetime.fromtimestamp($1).strftime('%H:%M'), end='')"
+}
+
+seconds_to_hhmm() {
+    python3 -c "
+secs = int($1)
+h = secs // 3600
+m = (secs % 3600) // 60
+print(f'{h}h {m:02d}m', end='')
+"
+}
+
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
+
+cmd_start() {
+    mkdir -p "$WORK_DIR"
+    NOW=$(epoch_now)
+    TODAY=$(date +%Y-%m-%d)
+
+    if [[ -f "$STATE_FILE" ]]; then
+        STATE_DATE=$(state_get date)
+        if [[ "$STATE_DATE" == "$TODAY" ]]; then
+            # Same day — check for open session
+            OPEN=$(py "
+import json
+d = json.load(open('$STATE_FILE'))
+open_sess = [s for s in d['sessions'] if s['end'] is None]
+print('yes' if open_sess else 'no', end='')
+")
+            if [[ "$OPEN" == "yes" ]]; then
+                STARTED=$(py "
+import json, datetime
+d = json.load(open('$STATE_FILE'))
+s = next(s for s in d['sessions'] if s['end'] is None)
+print(datetime.datetime.fromtimestamp(s['start']).strftime('%H:%M'), end='')
+")
+                echo "Session already active since $STARTED. Use 'work end' first."
+                exit 1
+            fi
+            # Append new session to existing day
+            py "
+import json
+d = json.load(open('$STATE_FILE'))
+d['sessions'].append({'start': $NOW, 'end': None})
+open('$STATE_FILE','w').write(json.dumps(d, indent=2))
+"
+            echo "Session started at $(epoch_to_hhmm $NOW). (Continuing $TODAY)"
+            return
+        fi
+        # Different day with no prior end — warn if there's an open session
+        OPEN=$(py "
+import json
+d = json.load(open('$STATE_FILE'))
+open_sess = [s for s in d['sessions'] if s['end'] is None]
+print('yes' if open_sess else 'no', end='')
+")
+        if [[ "$OPEN" == "yes" ]]; then
+            echo "Warning: There is an unclosed session from $STATE_DATE."
+            echo "Run 'work end' to close it (it will be logged to that date), or delete $STATE_FILE to discard it."
+            exit 1
+        fi
+    fi
+
+    # Fresh day
+    state_write "{'date': '$TODAY', 'sessions': [{'start': $NOW, 'end': None}], 'accumulated_hours': 0}"
+    echo "Session started at $(epoch_to_hhmm $NOW)."
+}
+
+cmd_end() {
+    if [[ ! -f "$STATE_FILE" ]]; then
+        echo "No active session. Use 'work start' first."
+        exit 1
+    fi
+
+    TODAY=$(date +%Y-%m-%d)
+    STATE_DATE=$(state_get date)
+    NOW=$(epoch_now)
+
+    OPEN=$(py "
+import json
+d = json.load(open('$STATE_FILE'))
+open_sess = [s for s in d['sessions'] if s['end'] is None]
+print('yes' if open_sess else 'no', end='')
+")
+
+    if [[ "$OPEN" != "yes" ]]; then
+        echo "No active session to end."
+        exit 1
+    fi
+
+    # Close the session and compute totals
+    RESULT=$(py "
+import json, sys
+d = json.load(open('$STATE_FILE'))
+now = $NOW
+for s in d['sessions']:
+    if s['end'] is None:
+        s['end'] = now
+        duration = (now - s['start']) / 3600.0
+        d['accumulated_hours'] = d.get('accumulated_hours', 0) + duration
+        break
+total = d['accumulated_hours']
+open('$STATE_FILE','w').write(json.dumps(d, indent=2))
+print(f\"{total:.4f}\")
+")
+
+    TOTAL_HOURS="$RESULT"
+    DATE_STR="$STATE_DATE"
+
+    echo "Session ended. Syncing to Google Sheets..."
+    python3 "$SHEETS_PY" sync-day "$DATE_STR" "$TOTAL_HOURS"
+
+    TOTAL_DISPLAY=$(py "
+h = $TOTAL_HOURS
+hrs = int(h)
+mins = int((h - hrs) * 60)
+print(f'{hrs}h {mins:02d}m', end='')
+")
+    echo "Done. Total logged for $DATE_STR: $TOTAL_DISPLAY (${TOTAL_HOURS}h)"
+}
+
+cmd_status() {
+    TODAY=$(date +%Y-%m-%d)
+    NOW=$(epoch_now)
+
+    if [[ ! -f "$STATE_FILE" ]]; then
+        echo "Date:    $TODAY"
+        echo "Session: no active session"
+        echo ""
+    else
+        STATE_DATE=$(state_get date)
+        py "
+import json, datetime
+d = json.load(open('$STATE_FILE'))
+now = $NOW
+today = '$TODAY'
+
+date_str = d['date']
+sessions = d['sessions']
+accumulated = d.get('accumulated_hours', 0)
+
+# Find open session
+open_sess = next((s for s in sessions if s['end'] is None), None)
+session_count = len(sessions)
+closed_count = sum(1 for s in sessions if s['end'] is not None)
+
+print(f'Date:    {date_str}')
+
+if date_str != today:
+    print('(state is from a previous day)')
+
+if open_sess:
+    started = datetime.datetime.fromtimestamp(open_sess['start'])
+    elapsed_secs = now - open_sess['start']
+    h = int(elapsed_secs // 3600)
+    m = int((elapsed_secs % 3600) // 60)
+    current_session_h = elapsed_secs / 3600.0
+    total_h = accumulated + current_session_h
+    total_hrs = int(total_h)
+    total_mins = int((total_h - total_hrs) * 60)
+    print(f'Session: active since {started.strftime(\"%H:%M\")} ({h}h {m:02d}m ago)')
+    print(f'Today:   {total_hrs}h {total_mins:02d}m ({total_h:.2f}h) — session open')
+else:
+    total_h = accumulated
+    total_hrs = int(total_h)
+    total_mins = int((total_h - total_hrs) * 60)
+    print(f'Session: not active')
+    print(f'Today:   {total_hrs}h {total_mins:02d}m ({total_h:.2f}h) — session closed')
+
+if session_count > 1:
+    print(f'         ({session_count} session(s) total today)')
+"
+        echo ""
+    fi
+
+    echo -n "Fetching saldo from Sheets..."
+    SALDO=$(python3 "$SHEETS_PY" get-saldo 2>/dev/null || echo "0")
+    echo ""
+    py "
+saldo = float('$SALDO')
+sign = '+' if saldo >= 0 else ''
+hrs = int(abs(saldo))
+mins = int((abs(saldo) - hrs) * 60)
+if saldo < 0:
+    print(f'Saldo:   -{hrs}h {mins:02d}m ({saldo:.2f}h)')
+else:
+    print(f'Saldo:   +{hrs}h {mins:02d}m ({saldo:.2f}h)')
+"
+}
+
+cmd_bootstrap() {
+    echo "Bootstrapping Google Sheets..."
+    python3 "$SHEETS_PY" bootstrap
+}
+
+usage() {
+    cat <<EOF
+Usage: work <command>
+
+Commands:
+  start      Start a work session (accumulates on the same day)
+  end        End current session and sync to Google Sheets
+  status     Show current session info and cumulative saldo
+  bootstrap  Create and initialize the Google Spreadsheet for the year
+
+Setup:
+  1. Copy config.json.example to ~/.work-hours/config.json and edit it
+  2. pip install gspread google-auth
+  3. work bootstrap
+EOF
+}
+
+# ---------------------------------------------------------------------------
+# Dispatch
+# ---------------------------------------------------------------------------
+
+case "${1:-}" in
+    start)     cmd_start ;;
+    end)       cmd_end ;;
+    status)    cmd_status ;;
+    bootstrap) cmd_bootstrap ;;
+    *)         usage ;;
+esac

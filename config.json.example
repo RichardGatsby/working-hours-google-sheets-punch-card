@@ -1,0 +1,7 @@
+{
+  "spreadsheet_id": "",
+  "credentials_path": "/path/to/service-account-key.json",
+  "target_hours_weekday": 7.5,
+  "target_hours_weekend": 0,
+  "theme_color": "#1e3a5f"
+}

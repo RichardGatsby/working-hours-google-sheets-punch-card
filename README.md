@@ -64,7 +64,8 @@ Edit `config.json`:
   "spreadsheet_id": "paste-your-spreadsheet-id-here",
   "credentials_path": "credentials.json",
   "target_hours_weekday": 7.5,
-  "target_hours_weekend": 0
+  "target_hours_weekend": 0,
+  "theme_color": "#1e3a5f"
 }
 ```
 
@@ -72,6 +73,7 @@ Edit `config.json`:
 - **`credentials_path`** — path to your service account JSON key (relative to the project directory, or absolute)
 - **`target_hours_weekday`** — your daily target in hours (e.g. `7.5` for 7h 30min)
 - **`target_hours_weekend`** — typically `0`
+- **`theme_color`** — hex color used for spreadsheet header and summary styling (e.g. `#17DE80` for your company color)
 
 ### 5. Make the script executable and available
 

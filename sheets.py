@@ -5,6 +5,7 @@ import sys
 import json
 import calendar
 from pathlib import Path
+from typing import Optional
 from datetime import date, timedelta
 
 import gspread
@@ -79,8 +80,8 @@ def make_saldo_formula(
     row: int,
     is_first_row_of_tab: bool,
     is_january: bool,
-    prev_tab_name: str | None,
-    prev_tab_last_row: int | None,
+    prev_tab_name: Optional[str],
+    prev_tab_last_row: Optional[int],
 ) -> str:
     if is_first_row_of_tab:
         if is_january:

@@ -9,7 +9,7 @@ Log your working hours from the terminal. Sessions are tracked locally and synce
 - `work status` — see today's hours and your cumulative saldo
 - `work bootstrap` — one-time setup to create the spreadsheet
 
-Starting again on the same day accumulates hours. Each month gets its own sheet tab with dates, target hours (7.5h weekdays, 0 weekends), and a running saldo.
+Starting again on the same day accumulates hours. Each month gets its own sheet tab with dates, target hours (7.5h weekdays, 0 on weekends and **Finnish public holidays**), and a running saldo. Weekends get a light gray row background; public holidays get a slightly bluish tint so you can tell them apart from ordinary weekends.
 
 ---
 

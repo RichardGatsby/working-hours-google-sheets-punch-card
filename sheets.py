@@ -5,7 +5,7 @@ import sys
 import json
 import calendar
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Set
 from datetime import date, timedelta
 
 import gspread
@@ -72,6 +72,56 @@ def month_days(year: int, month: int):
         yield date(year, month, day)
 
 
+def easter_sunday(year: int) -> date:
+    """Western Easter (Gregorian), Anonymous Gregorian algorithm."""
+    a = year % 19
+    b = year // 100
+    c = year % 100
+    d = b // 4
+    e = b % 4
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i = c // 4
+    k = c % 4
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    month = (h + l - 7 * m + 114) // 31
+    day = ((h + l - 7 * m + 114) % 31) + 1
+    return date(year, month, day)
+
+
+def finnish_public_holidays(year: int) -> Set[date]:
+    """Finnish national public holidays (lakisääteiset pyhäpäivät) for the given year."""
+    e = easter_sunday(year)
+    out = {
+        date(year, 1, 1),
+        date(year, 1, 6),
+        e - timedelta(days=2),
+        e,
+        e + timedelta(days=1),
+        date(year, 5, 1),
+        e + timedelta(days=39),
+        e + timedelta(days=49),
+        date(year, 12, 6),
+        date(year, 12, 24),
+        date(year, 12, 25),
+        date(year, 12, 26),
+    }
+    for d in range(20, 27):
+        midsummer = date(year, 6, d)
+        if midsummer.weekday() == 5:
+            out.add(midsummer - timedelta(days=1))
+            out.add(midsummer)
+            break
+    for i in range(7):
+        d = date(year, 10, 31) + timedelta(days=i)
+        if d.weekday() == 5:
+            out.add(d)
+            break
+    return out
+
+
 def make_diff_formula(row: int) -> str:
     return f'=IF(C{row}="", "", C{row}-D{row})'
 
@@ -113,6 +163,7 @@ def format_worksheet(spreadsheet, ws, year: int, month: int, config: dict) -> No
     COLOR_SUMMARY_VAL = tint(COLOR_HEADER, 0.75)
     COLOR_HEADER_TEXT = {"red": 0.1, "green": 0.1, "blue": 0.1} if is_dark_text_needed(COLOR_HEADER) else {"red": 1.0, "green": 1.0, "blue": 1.0}
     COLOR_WEEKEND      = {"red": 0.925, "green": 0.925, "blue": 0.925}
+    COLOR_PUBLIC_HOLIDAY = {"red": 0.88, "green": 0.91, "blue": 0.96}
     COLOR_POSITIVE     = {"red": 0.851, "green": 0.918, "blue": 0.827}
     COLOR_NEGATIVE     = {"red": 0.988, "green": 0.910, "blue": 0.910}
 
@@ -195,11 +246,18 @@ def format_worksheet(spreadsheet, ws, year: int, month: int, config: dict) -> No
         col_width(9, 125),  # J Cumulative Saldo
     ]
 
-    # Weekend row backgrounds
+    holidays_year = finnish_public_holidays(year)
+
+    # Weekend and Finnish public holiday row backgrounds (holidays use a cooler tint)
     for day_date in month_days(year, month):
-        if day_date.weekday() >= 5:
-            row = day_date.day + 1  # +1 for header
-            requests.append(cell_fmt(row - 1, row, 0, 6, {"backgroundColor": COLOR_WEEKEND}))
+        if day_date in holidays_year:
+            bg = COLOR_PUBLIC_HOLIDAY
+        elif day_date.weekday() >= 5:
+            bg = COLOR_WEEKEND
+        else:
+            continue
+        row = day_date.day + 1  # +1 for header
+        requests.append(cell_fmt(row - 1, row, 0, 6, {"backgroundColor": bg}))
 
     spreadsheet.batch_update({"requests": requests})
 
@@ -241,9 +299,12 @@ def bootstrap_month(spreadsheet, year: int, month: int, config: dict) -> None:
     target_weekday = config.get("target_hours_weekday", 7.5)
     target_weekend = config.get("target_hours_weekend", 0)
 
+    holidays_year = finnish_public_holidays(year)
+
     for row_idx, day_date in enumerate(month_days(year, month), start=2):
         is_weekend = day_date.weekday() >= 5
-        target = target_weekend if is_weekend else target_weekday
+        is_public_holiday = day_date in holidays_year
+        target = target_weekend if (is_weekend or is_public_holiday) else target_weekday
 
         cells.append(gspread.Cell(row_idx, 1, str(day_date)))
         cells.append(gspread.Cell(row_idx, 2, day_date.strftime("%A")))
